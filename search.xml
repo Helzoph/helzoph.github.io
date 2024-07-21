@@ -785,8 +785,118 @@
       </categories>
       <tags>
         <tag>Gin</tag>
-        <tag>Gee</tag>
         <tag>Web</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>分布式缓存 GeeCache 学习笔记</title>
+    <url>/2024/07/21/%E5%88%86%E5%B8%83%E5%BC%8F%E7%BC%93%E5%AD%98-GeeCache-%E5%AD%A6%E4%B9%A0%E7%AC%94%E8%AE%B0/</url>
+    <content><![CDATA[<p><a href="https://geektutu.com/post/geecache.html">GeeCache</a></p>
+<h1>0 序言</h1>
+<p><strong>如果直接使用 map 存储数据会有什么问题？</strong></p>
+<ul>
+<li>内存不足时该删除哪些数据？</li>
+<li>并发写入冲突
+<ul>
+<li>map 是没有并发保护的，修改需要加锁</li>
+</ul>
+</li>
+<li>单机性能不足</li>
+<li>…</li>
+</ul>
+<h1>1 缓存淘汰策略</h1>
+<h2 id="1-1-FIFO-LFU-LRU">1.1 FIFO/LFU/LRU</h2>
+<table>
+<thead>
+<tr>
+<th>算法</th>
+<th>解释</th>
+<th>特点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FIFO (First In First Out)</td>
+<td>先进先出</td>
+<td>如果最早添加的记录是最常被访问的，会导致这类数据频繁被添加进缓存，然后又被淘汰掉，使得缓存命中率降低</td>
+</tr>
+<tr>
+<td>LFU (Least Frequently Used)</td>
+<td>最少使用</td>
+<td>如果某个数据曾经访问次数特别高，但是之后几乎不再被访问，会因为历史访问次数过高而不能被淘汰</td>
+</tr>
+<tr>
+<td><strong>LRU (Least Recently Used)</strong></td>
+<td>最近最少</td>
+<td>如果数据最近被访问过，那将来被访问的概率会更高</td>
+</tr>
+</tbody>
+</table>
+<h2 id="1-2-LRU-算法实现">1.2 LRU 算法实现</h2>
+<h3 id="1-2-1-核心数据结构">1.2.1 核心数据结构</h3>
+<p>创建一个队列，如果某条记录被访问了，则移动到队尾，这样队首就是最近最少访问的俄数据，淘汰即可</p>
+<p><img src="https://geektutu.com/post/geecache-day1/lru.jpg" alt="implement lru algorithm with golang"></p>
+<ul>
+<li>蓝色为 map ，用来存储键和值的映射关系</li>
+<li>红色为双链表实现的队列</li>
+</ul>
+<p><strong>Code 1.2.1</strong> <code>learn-geecache/lru/lru.go</code></p>
+<figure class="highlight go"><table><tr><td class="code"><pre><span class="line"><span class="keyword">package</span> lru</span><br><span class="line"></span><br><span class="line"><span class="keyword">import</span> <span class="string">&quot;container/list&quot;</span></span><br><span class="line"></span><br><span class="line"><span class="comment">// Cache is a LRU cache. It is not safe for concurrent access.</span></span><br><span class="line"><span class="keyword">type</span> Cache <span class="keyword">struct</span> &#123;</span><br><span class="line">	maxBytes <span class="type">int64</span></span><br><span class="line">	nbytes   <span class="type">int64</span></span><br><span class="line">	ll       *list.List</span><br><span class="line">	cache    <span class="keyword">map</span>[<span class="type">string</span>]*list.Element</span><br><span class="line">	<span class="comment">// optional and executed when an entry is purged.</span></span><br><span class="line">	OnEvicted <span class="function"><span class="keyword">func</span><span class="params">(key <span class="type">string</span>, value Value)</span></span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> entry <span class="keyword">struct</span> &#123;</span><br><span class="line">	key   <span class="type">string</span></span><br><span class="line">	value Value</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// Value use Len to count how many bytes it takes</span></span><br><span class="line"><span class="keyword">type</span> Value <span class="keyword">interface</span> &#123;</span><br><span class="line">	Len() <span class="type">int</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// New is the Constructor of Cache</span></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">New</span><span class="params">(maxBytes <span class="type">int64</span>, onEvicted <span class="keyword">func</span>(<span class="type">string</span>, Value)</span></span>) *Cache &#123;</span><br><span class="line">	<span class="keyword">return</span> &amp;Cache&#123;</span><br><span class="line">		maxBytes:  maxBytes,</span><br><span class="line">		ll:        list.New(),</span><br><span class="line">		cache:     <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="type">string</span>]*list.Element),</span><br><span class="line">		OnEvicted: onEvicted,</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<ul>
+<li>第 7 行 <code>maxBytes</code> 是允许使用的最大内存</li>
+<li>第 8 行 <code>nbytes</code> 是目前已使用的内存</li>
+<li>第 9 行，Golang 标准库实现的双链表 <code>list.List</code>，即上图中红色部分</li>
+<li>第 10 行 <code>map[string]*list.Element</code>，键是字符串，值是双链表中对应节点的指针，即上图中蓝色部分</li>
+<li>第 12 行 <code>OnEvicted</code> 是某条记录被移除时的回调函数</li>
+<li>第 15-18 行 <code>entry</code> 是双链表节点的数据类型，在链表中仍保存每个值对应的 key 的好处在于，淘汰队首节点时，需要用 key 从字典中删除对应的映射</li>
+<li>第 21-23 行，允许值是实现 <code>Value</code> 接口的任意类型，<code>Len() int</code> 用于返回值所占用的内存大小</li>
+</ul>
+<h3 id="1-2-2-查找">1.2.2 查找</h3>
+<ul>
+<li>如果键对应的链表节点存在，则将其移动到队尾，并返回查找到的值</li>
+</ul>
+<ol>
+<li>从字典里找到对应的双链表节点</li>
+<li>将该节点移动到队尾</li>
+</ol>
+<p><strong>Code 1.2.2</strong></p>
+<figure class="highlight go"><table><tr><td class="code"><pre><span class="line"><span class="comment">// Get look ups a key&#x27;s value</span></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(c *Cache)</span></span> Get(key <span class="type">string</span>) (value Value, ok <span class="type">bool</span>) &#123;</span><br><span class="line">	<span class="keyword">if</span> ele, ok := c.cache[key]; ok &#123;</span><br><span class="line">		c.ll.MoveToFront(ele)</span><br><span class="line">		kv := ele.Value.(*entry)</span><br><span class="line">		<span class="keyword">return</span> kv.value, <span class="literal">true</span></span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<ul>
+<li>第 4 行 <code>c.ll.MoveToFront(ele)</code> 是将链表中的节点 <code>ele</code> 移动到队尾
+<ul>
+<li>双链表作为队列，首尾是相对的，这里约定 <code>front</code> 为队尾</li>
+</ul>
+</li>
+</ul>
+<h3 id="1-2-3-删除">1.2.3 删除</h3>
+<p><strong>Code 1.2.3</strong></p>
+<figure class="highlight go"><table><tr><td class="code"><pre><span class="line"><span class="comment">// RemoveOldest removes the oldest item</span></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(c *Cache)</span></span> RemoveOldest() &#123;</span><br><span class="line">	ele := c.ll.Back()</span><br><span class="line">	<span class="keyword">if</span> ele != <span class="literal">nil</span> &#123;</span><br><span class="line">		c.ll.Remove(ele)</span><br><span class="line">		kv := ele.Value.(*entry)</span><br><span class="line">		<span class="built_in">delete</span>(c.cache, kv.key)</span><br><span class="line">		c.nbytes -= <span class="type">int64</span>(<span class="built_in">len</span>(kv.key)) + <span class="type">int64</span>(kv.value.Len())</span><br><span class="line">		<span class="keyword">if</span> c.OnEvicted != <span class="literal">nil</span> &#123;</span><br><span class="line">			c.OnEvicted(kv.key, kv.value)</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<ul>
+<li>第 3 行 <code>c.ll.Back()</code> 取到队首节点，将其从链表中删除</li>
+<li>第 7 行 <code>delete(c.cache, kv.key)</code> ，从字典中 <code>c.cache</code> 删除该节点的映射关系</li>
+<li>第 8 行，更新目前所使用的内存</li>
+</ul>
+<h3 id="1-2-4-增加-修改">1.2.4 增加/修改</h3>
+<p><strong>Code 1.2.4</strong></p>
+<figure class="highlight go"><table><tr><td class="code"><pre><span class="line"><span class="comment">// Add adds a value to the cache.</span></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(c *Cache)</span></span> Add(key <span class="type">string</span>, value Value) &#123;</span><br><span class="line">	<span class="keyword">if</span> ele, ok := c.cache[key]; ok &#123;</span><br><span class="line">		c.ll.MoveToFront(ele)</span><br><span class="line">		kv := ele.Value.(*entry)</span><br><span class="line">		c.nbytes += <span class="type">int64</span>(value.Len()) - <span class="type">int64</span>(kv.value.Len())</span><br><span class="line">		kv.value = value</span><br><span class="line">	&#125; <span class="keyword">else</span> &#123;</span><br><span class="line">		ele := c.ll.PushFront(&amp;entry&#123;key, value&#125;)</span><br><span class="line">		c.cache[key] = ele</span><br><span class="line">		c.nbytes += <span class="type">int64</span>(<span class="built_in">len</span>(key)) + <span class="type">int64</span>(value.Len())</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">for</span> c.maxBytes != <span class="number">0</span> &amp;&amp; c.maxBytes &lt; c.nbytes &#123;</span><br><span class="line">		c.RemoveOldest()</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<ul>
+<li>第 3-8 行，如果键存在则更新对应节点的值，并将其移动到队尾</li>
+<li>第 8-12 行，如果不存在，在队尾添加新节点 <code>&amp;entry&#123;key, value&#125;</code>，并在 map 中添加 key 和节点的映射关系</li>
+<li>第 13 行，更新目前所使用的内存，如果超出了设定的最大值，则移除最少访问的节点</li>
+</ul>
+<h2 id="1-3-测试">1.3 测试</h2>
+<figure class="highlight go"><table><tr><td class="code"><pre><span class="line"><span class="keyword">type</span> String <span class="type">string</span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(d String)</span></span> Len() <span class="type">int</span> &#123;</span><br><span class="line">	<span class="keyword">return</span> <span class="built_in">len</span>(d)</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">TestGet</span><span class="params">(t *testing.T)</span></span> &#123;</span><br><span class="line">	lru := New(<span class="type">int64</span>(<span class="number">0</span>), <span class="literal">nil</span>)</span><br><span class="line">	lru.Add(<span class="string">&quot;key1&quot;</span>, String(<span class="string">&quot;1234&quot;</span>))</span><br><span class="line">	<span class="keyword">if</span> v, ok := lru.Get(<span class="string">&quot;key1&quot;</span>); !ok || <span class="type">string</span>(v.(String)) != <span class="string">&quot;1234&quot;</span> &#123;</span><br><span class="line">		t.Fatalf(<span class="string">&quot;cache hit key1=1234 failed&quot;</span>)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">if</span> _, ok := lru.Get(<span class="string">&quot;key2&quot;</span>); ok &#123;</span><br><span class="line">		t.Fatalf(<span class="string">&quot;cache miss key2 failed&quot;</span>)</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">TestRemoveoldest</span><span class="params">(t *testing.T)</span></span> &#123;</span><br><span class="line">	k1, k2, k3 := <span class="string">&quot;key1&quot;</span>, <span class="string">&quot;key2&quot;</span>, <span class="string">&quot;k3&quot;</span></span><br><span class="line">	v1, v2, v3 := <span class="string">&quot;value1&quot;</span>, <span class="string">&quot;value2&quot;</span>, <span class="string">&quot;v3&quot;</span></span><br><span class="line">	<span class="built_in">cap</span> := <span class="built_in">len</span>(k1 + k2 + v1 + v2)</span><br><span class="line">	lru := New(<span class="type">int64</span>(<span class="built_in">cap</span>), <span class="literal">nil</span>)</span><br><span class="line">	lru.Add(k1, String(v1))</span><br><span class="line">	lru.Add(k2, String(v2))</span><br><span class="line">	lru.Add(k3, String(v3))</span><br><span class="line"></span><br><span class="line">	<span class="keyword">if</span> _, ok := lru.Get(<span class="string">&quot;key1&quot;</span>); ok || lru.Len() != <span class="number">2</span> &#123;</span><br><span class="line">		t.Fatalf(<span class="string">&quot;Removeoldest key1 failed&quot;</span>)</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">TestOnEvicted</span><span class="params">(t *testing.T)</span></span> &#123;</span><br><span class="line">	keys := <span class="built_in">make</span>([]<span class="type">string</span>, <span class="number">0</span>)</span><br><span class="line">	callback := <span class="function"><span class="keyword">func</span><span class="params">(key <span class="type">string</span>, value Value)</span></span> &#123;</span><br><span class="line">		keys = <span class="built_in">append</span>(keys, key)</span><br><span class="line">	&#125;</span><br><span class="line">	lru := New(<span class="type">int64</span>(<span class="number">10</span>), callback)</span><br><span class="line">	lru.Add(<span class="string">&quot;key1&quot;</span>, String(<span class="string">&quot;123456&quot;</span>))</span><br><span class="line">	lru.Add(<span class="string">&quot;k2&quot;</span>, String(<span class="string">&quot;k2&quot;</span>))</span><br><span class="line">	lru.Add(<span class="string">&quot;k3&quot;</span>, String(<span class="string">&quot;k3&quot;</span>))</span><br><span class="line">	lru.Add(<span class="string">&quot;k4&quot;</span>, String(<span class="string">&quot;k4&quot;</span>))</span><br><span class="line"></span><br><span class="line">	expect := []<span class="type">string</span>&#123;<span class="string">&quot;key1&quot;</span>, <span class="string">&quot;k2&quot;</span>&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">if</span> !reflect.DeepEqual(expect, keys) &#123;</span><br><span class="line">		t.Fatalf(<span class="string">&quot;Call OnEvicted failed, expect keys equals to %s&quot;</span>, expect)</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<h1>2 单机并发缓存</h1>
+<h2 id="2-1-sync-Mutex">2.1 sync.Mutex</h2>
+<p>当一个协程调用了 <code>Lock()</code> 方法时，其他协程被阻塞了，直到 <code>Unlock()</code> 调用将锁释放。因此被包裹部分的代码就能够避免冲突，实现互斥</p>
+]]></content>
+      <categories>
+        <category>学习笔记</category>
+      </categories>
+      <tags>
+        <tag>分布式缓存</tag>
+        <tag>groupcache</tag>
+        <tag>memcached</tag>
       </tags>
   </entry>
   <entry>
